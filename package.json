@@ -1,0 +1,19 @@
+{
+  "name": "missive-slack-integration",
+  "version": "1.0.0",
+  "description": "Share emails from Missive to Slack users via DM — a Vercel-deployed integration.",
+  "private": true,
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "echo 'No build step needed — Vercel handles serverless functions and static files.'"
+  },
+  "dependencies": {
+    "@slack/web-api": "^7.9.1"
+  },
+  "devDependencies": {
+    "vercel": "^39.3.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
