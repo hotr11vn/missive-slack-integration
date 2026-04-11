@@ -72,10 +72,10 @@
 
   function showStatus(msg, type) {
     $status.textContent = msg;
-    $status.className = `status status--${type}`;
+    $status.className = "status status--" + type;
     $status.classList.remove("hidden");
     if (type === "success") {
-      setTimeout(() => $status.classList.add("hidden"), 5000);
+      setTimeout(function () { $status.classList.add("hidden"); }, 5000);
     }
   }
 
@@ -94,14 +94,14 @@
    */
   function stripHtml(html) {
     if (!html) return "";
-    const tmp = document.createElement("div");
+    var tmp = document.createElement("div");
     tmp.innerHTML = html;
     return tmp.textContent || tmp.innerText || "";
   }
 
   /**
-   * Format a field like from_field / to_fields into a readable string.
-   * Missive returns these as objects: { name, address }.
+   * Format a contact field (AddressField) into a readable string.
+   * Missive returns: { name: "...", address: "..." }
    */
   function formatContact(field) {
     if (!field) return "";
@@ -109,27 +109,28 @@
     if (Array.isArray(field)) {
       return field.map(formatContact).filter(Boolean).join(", ");
     }
-    if (field.name && field.address) return `${field.name} <${field.address}>`;
+    if (field.name && field.address) return field.name + " <" + field.address + ">";
     return field.address || field.name || "";
   }
 
   // ── Slack user picker ──────────────────────────────────────────────
 
   function renderUserList(filter) {
-    const q = (filter || "").toLowerCase();
-    const filtered = q
-      ? slackUsers.filter(
-          (u) =>
+    var q = (filter || "").toLowerCase();
+    var filtered = q
+      ? slackUsers.filter(function (u) {
+          return (
             u.displayName.toLowerCase().includes(q) ||
             u.name.toLowerCase().includes(q) ||
             (u.email && u.email.toLowerCase().includes(q))
-        )
+          );
+        })
       : slackUsers;
 
     $userList.innerHTML = "";
 
     if (!filtered.length) {
-      const li = document.createElement("li");
+      var li = document.createElement("li");
       li.className = "dropdown__empty";
       li.textContent = q ? "No users found" : "Loading users…";
       $userList.appendChild(li);
@@ -137,23 +138,23 @@
       return;
     }
 
-    filtered.slice(0, 50).forEach((user) => {
-      const li = document.createElement("li");
+    filtered.slice(0, 50).forEach(function (user) {
+      var li = document.createElement("li");
       li.dataset.id = user.id;
 
-      const img = document.createElement("img");
+      var img = document.createElement("img");
       img.src = user.avatar || "";
       img.alt = "";
       img.width = 24;
       img.height = 24;
 
-      const span = document.createElement("span");
+      var span = document.createElement("span");
       span.textContent = user.displayName;
 
       li.appendChild(img);
       li.appendChild(span);
 
-      li.addEventListener("click", () => selectUser(user));
+      li.addEventListener("click", function () { selectUser(user); });
       $userList.appendChild(li);
     });
 
@@ -183,14 +184,13 @@
   async function loadSlackUsers() {
     if (usersLoaded) return;
     try {
-      const res = await fetch(`${API_BASE}/api/slack/users`);
-      const data = await res.json();
+      var res = await fetch(API_BASE + "/api/slack/users");
+      var data = await res.json();
       if (!data.ok) throw new Error(data.error || "Failed to load users");
       slackUsers = data.members || [];
       usersLoaded = true;
     } catch (err) {
-      console.error("Failed to load Slack users:", err);
-      // Non-fatal — user can retry by typing in the search box
+      console.error("[Share to Slack] Failed to load Slack users:", err);
     }
   }
 
@@ -204,17 +204,15 @@
     $emailTo.textContent = formatContact(email.to_fields);
 
     if (email.delivered_at) {
-      const d = new Date(
-        typeof email.delivered_at === "number"
-          ? email.delivered_at * 1000
-          : email.delivered_at
-      );
+      var ts = email.delivered_at;
+      // Missive delivers Unix timestamps in seconds
+      var d = new Date(typeof ts === "number" ? ts * 1000 : ts);
       $emailDate.textContent = d.toLocaleString();
     } else {
       $emailDate.textContent = "";
     }
 
-    const bodyText = stripHtml(email.body || email.preview || "");
+    var bodyText = stripHtml(email.body || email.preview || "");
     $emailBody.textContent = bodyText.slice(0, 500);
 
     // Reset send state
@@ -228,122 +226,128 @@
   // ── Missive integration ────────────────────────────────────────────
 
   /**
-   * Fetch the first message of the given conversation IDs and display it.
+   * Fetch the conversation data for the given IDs and display the
+   * latest email message.
+   *
+   * IMPORTANT: Missive SDK methods return Promises (not callbacks).
+   * Reference: https://missiveapp.com/docs/developers/ui-iframe-integrations/javascript-api
    */
   async function handleConversationChange(ids) {
+    console.log("[Share to Slack] change:conversations fired, ids:", ids);
+
     if (!ids || !ids.length) {
       showState("empty");
+      currentConversationId = null;
       return;
     }
 
-    const conversationId = ids[0];
+    var conversationId = ids[0];
     if (conversationId === currentConversationId) return;
     currentConversationId = conversationId;
 
     showState("loading");
 
     try {
-      // Fetch conversation to get message IDs
-      const conversations = await new Promise((resolve, reject) => {
-        if (typeof Missive !== "undefined" && Missive.fetchConversations) {
-          Missive.fetchConversations([conversationId], (err, data) => {
-            if (err) return reject(err);
-            resolve(data);
-          });
-        } else {
-          reject(new Error("Missive SDK not available"));
-        }
-      });
+      // fetchConversations returns a Promise that resolves with an array
+      var conversations = await Missive.fetchConversations(ids);
+      console.log("[Share to Slack] fetchConversations result:", conversations);
 
-      const conv = conversations && conversations[0];
-      if (!conv) {
+      if (!conversations || !conversations.length) {
         showState("empty");
         return;
       }
 
-      // If the conversation object already has message data, use it
-      if (conv.messages && conv.messages.length) {
-        displayEmail({
-          ...conv.messages[0],
-          _conversationId: conversationId,
-          _webUrl: conv.web_url || conv.app_url || "",
-        });
-        return;
-      }
+      var conv = conversations[0];
 
-      // Otherwise fetch messages by their IDs
-      const messageIds =
-        conv.message_ids || conv.email_message_ids || [];
-      if (!messageIds.length) {
-        displayEmail({
-          subject: conv.subject || "No Subject",
-          preview: conv.preview || "",
-          _conversationId: conversationId,
-          _webUrl: conv.web_url || conv.app_url || "",
-        });
-        return;
-      }
+      // The conversation object has a `latest_message` with full email data
+      var message = conv.latest_message;
 
-      const messages = await new Promise((resolve, reject) => {
-        Missive.fetchMessages(messageIds.slice(0, 1), (err, data) => {
-          if (err) return reject(err);
-          resolve(data);
-        });
-      });
-
-      if (messages && messages.length) {
+      if (message && message.from_field) {
         displayEmail({
-          ...messages[0],
+          subject: message.subject || conv.subject || "No Subject",
+          from_field: message.from_field,
+          to_fields: message.to_fields || [],
+          cc_fields: message.cc_fields || [],
+          body: message.body || "",
+          preview: message.preview || "",
+          delivered_at: message.delivered_at,
           _conversationId: conversationId,
-          _webUrl: conv.web_url || conv.app_url || "",
+          _webUrl: conv.link || "",
+          _messageId: message.id,
         });
       } else {
+        // Conversation might be a chat (no email message) — show what we have
         displayEmail({
           subject: conv.subject || "No Subject",
-          preview: conv.preview || "",
+          from_field: conv.authors && conv.authors[0] ? conv.authors[0] : null,
+          to_fields: [],
+          body: "",
+          preview: message ? message.preview || "" : "",
+          delivered_at: message ? message.delivered_at : null,
           _conversationId: conversationId,
-          _webUrl: conv.web_url || conv.app_url || "",
+          _webUrl: conv.link || "",
         });
       }
     } catch (err) {
-      console.error("Error fetching Missive data:", err);
-      showError("Could not load email data. " + (err.message || ""));
+      console.error("[Share to Slack] Error fetching conversation:", err);
+      showError("Could not load email data. " + (err.message || String(err)));
     }
   }
 
   /**
    * Register the "Share to Slack" action in Missive's context menu.
+   *
+   * When triggered from the message context menu, the callback receives
+   * an object like: { message: { id, subject, ... }, conversation: { id, ... } }
    */
   function registerMissiveActions() {
-    if (typeof Missive === "undefined") return;
-
     try {
       Missive.setActions([
         {
           label: "Share to Slack",
           contexts: ["message"],
-          callback: function (context) {
-            // When triggered from the context menu, fetch that specific message
-            if (context && context.message && context.message.id) {
-              Missive.fetchMessages([context.message.id], (err, msgs) => {
-                if (!err && msgs && msgs.length) {
-                  displayEmail({
-                    ...msgs[0],
-                    _conversationId: context.conversation
-                      ? context.conversation.id
-                      : "",
-                    _webUrl: context.conversation
-                      ? context.conversation.web_url || context.conversation.app_url || ""
-                      : "",
-                  });
-                }
-              });
+          callback: function (action) {
+            console.log("[Share to Slack] Action triggered:", action);
+
+            // When triggered from message context, fetch that specific message
+            if (action && action.message && action.message.id) {
+              Missive.fetchMessages([action.message.id])
+                .then(function (msgs) {
+                  console.log("[Share to Slack] fetchMessages result:", msgs);
+                  if (msgs && msgs.length) {
+                    var convLink = "";
+                    if (action.conversation && action.conversation.id) {
+                      // We'll try to get the link from the conversation
+                      convLink = action.conversation.link || "";
+                    }
+                    displayEmail({
+                      subject: msgs[0].subject || "No Subject",
+                      from_field: msgs[0].from_field,
+                      to_fields: msgs[0].to_fields || [],
+                      cc_fields: msgs[0].cc_fields || [],
+                      body: msgs[0].body || "",
+                      preview: msgs[0].preview || "",
+                      delivered_at: msgs[0].delivered_at,
+                      _conversationId: action.conversation
+                        ? action.conversation.id
+                        : "",
+                      _webUrl: convLink,
+                      _messageId: msgs[0].id,
+                    });
+                    // Open the sidebar to show the loaded email
+                    Missive.openSelf();
+                  }
+                })
+                .catch(function (err) {
+                  console.error("[Share to Slack] fetchMessages error:", err);
+                });
             }
           },
         },
       ]);
+      console.log("[Share to Slack] Actions registered successfully");
     } catch (e) {
-      console.warn("Could not register Missive actions:", e);
+      console.warn("[Share to Slack] Could not register Missive actions:", e);
     }
   }
 
@@ -356,13 +360,13 @@
     hideStatus();
 
     // Build the body text, prepending the personal note if provided
-    let bodyContent = currentEmail.body || currentEmail.preview || "";
-    const note = $personalNote.value.trim();
+    var bodyContent = currentEmail.body || currentEmail.preview || "";
+    var note = $personalNote.value.trim();
     if (note) {
-      bodyContent = `_${note}_\n\n---\n\n${bodyContent}`;
+      bodyContent = "_" + note + "_\n\n---\n\n" + bodyContent;
     }
 
-    const payload = {
+    var payload = {
       userId: selectedSlackUser.id,
       subject: currentEmail.subject || "No Subject",
       from: formatContact(currentEmail.from_field),
@@ -377,30 +381,32 @@
     };
 
     try {
-      const res = await fetch(`${API_BASE}/api/slack/send`, {
+      var res = await fetch(API_BASE + "/api/slack/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
+      var data = await res.json();
 
       if (!data.ok) throw new Error(data.error || "Send failed");
 
       showStatus(
-        `Sent to ${selectedSlackUser.displayName} on Slack!`,
+        "Sent to " + selectedSlackUser.displayName + " on Slack!",
         "success"
       );
 
       // Notify Missive that the action completed (optional toast)
-      if (typeof Missive !== "undefined" && Missive.alert) {
+      try {
         Missive.alert({
           title: "Shared to Slack",
-          message: `Email sent to ${selectedSlackUser.displayName}`,
+          message: "Email sent to " + selectedSlackUser.displayName,
         });
+      } catch (_) {
+        // alert is non-critical
       }
     } catch (err) {
-      console.error("Send error:", err);
+      console.error("[Share to Slack] Send error:", err);
       showStatus("Failed to send: " + err.message, "error");
     } finally {
       setLoading(false);
@@ -410,16 +416,18 @@
   // ── Event listeners ────────────────────────────────────────────────
 
   // User search / picker
-  $userSearch.addEventListener("focus", () => {
-    loadSlackUsers().then(() => renderUserList($userSearch.value));
+  $userSearch.addEventListener("focus", function () {
+    loadSlackUsers().then(function () {
+      renderUserList($userSearch.value);
+    });
   });
 
-  $userSearch.addEventListener("input", () => {
+  $userSearch.addEventListener("input", function () {
     renderUserList($userSearch.value);
   });
 
   // Close dropdown when clicking outside
-  document.addEventListener("click", (e) => {
+  document.addEventListener("click", function (e) {
     if (!e.target.closest(".select-wrapper")) {
       $userList.classList.add("hidden");
     }
@@ -434,6 +442,9 @@
   // ── Initialise ─────────────────────────────────────────────────────
 
   function init() {
+    console.log("[Share to Slack] Initialising...");
+    console.log("[Share to Slack] Missive SDK available:", typeof Missive !== "undefined");
+
     showState("empty");
 
     // Pre-fetch Slack users in the background
@@ -443,13 +454,23 @@
       // Register context-menu action
       registerMissiveActions();
 
-      // Listen for conversation selection changes
-      Missive.on("change:conversations", (ids) => {
-        handleConversationChange(ids);
-      });
+      // Listen for conversation selection changes.
+      // The { retroactive: true } option ensures the callback fires
+      // immediately if a conversation is already selected when the
+      // sidebar loads (which is the common case).
+      Missive.on(
+        "change:conversations",
+        function (ids) {
+          console.log("[Share to Slack] change:conversations event, ids:", ids);
+          handleConversationChange(ids);
+        },
+        { retroactive: true }
+      );
+
+      console.log("[Share to Slack] Event listeners registered");
     } else {
       console.warn(
-        "Missive SDK not detected — running in standalone/dev mode."
+        "[Share to Slack] Missive SDK not detected — running in standalone/dev mode."
       );
     }
   }
