@@ -191,21 +191,15 @@ module.exports = async function handler(req, res) {
     const blocks = buildBlocks({ subject, from, to, body, date, missiveLink });
 
     // 3. Post the message.
-    //    Note: Slack does NOT allow truly sending "as" another user with a
-    //    bot token — that requires a full user OAuth token (chat:write:user).
-    //    We use `username` + `icon_emoji` as a cosmetic override so the
-    //    message appears to come from "davidhoang via Missive" rather than
-    //    the generic bot name.  The `as_user: false` flag is required for
-    //    the username override to take effect.
-    const displayName = senderName || process.env.SENDER_DISPLAY_NAME || "davidhoang via Missive";
-
+    //    Note: Slack requires the `chat:write.customize` scope to override
+    //    the bot's display name / icon.  Since we only have `chat:write`,
+    //    we post as the bot app identity ("Missive to Slack").
+    //    To send as a real user you would need a user OAuth token with the
+    //    `chat:write` user scope — a separate OAuth flow not covered here.
     const msgRes = await slack.chat.postMessage({
       channel: channelId,
       text: `Email shared from Missive: ${subject || "No Subject"}`, // fallback for notifications
       blocks,
-      username: displayName,
-      icon_emoji: ":email:",
-      as_user: false,
       unfurl_links: false,
       unfurl_media: false,
     });
