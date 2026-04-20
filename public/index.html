@@ -5,15 +5,41 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Share to Slack — Missive Integration</title>
   <link rel="stylesheet" href="/assets/style.css" />
+  <style>
+    /* Small UI adjustments for the search filter */
+    .filter-tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .filter-tab {
+      flex: 1;
+      padding: 6px;
+      font-size: 12px;
+      background: #f4f4f4;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.2s;
+    }
+    .filter-tab.active {
+      background: #4a154b;
+      color: white;
+      border-color: #4a154b;
+    }
+    .chip--channel .chip__avatar {
+      background: #e8e8e8;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      color: #666;
+      border-radius: 4px;
+    }
+  </style>
 </head>
 <body>
-  <!-- ═══════════════════════════════════════════════════════════════
-       Missive Sidebar iFrame — "Share to Slack"
-       This page is loaded inside Missive's right-hand sidebar.
-       It uses missive.js to read email data and our Vercel API
-       routes to interact with Slack.
-       ═══════════════════════════════════════════════════════════════ -->
-
   <div id="app">
 
     <!-- ── Header ──────────────────────────────────────────────── -->
@@ -50,24 +76,32 @@
         <div class="card__body" id="email-body"></div>
       </div>
 
-      <!-- Slack user picker -->
-      <label class="label" for="slack-user-select">Send to Slack user</label>
+      <!-- Slack target picker -->
+      <label class="label">Send to Slack</label>
+      
+      <div class="filter-tabs">
+        <div id="tab-users" class="filter-tab active">Users</div>
+        <div id="tab-channels" class="filter-tab">Channels</div>
+      </div>
+
       <div class="select-wrapper">
         <input
           type="text"
-          id="slack-user-search"
+          id="slack-search"
           class="input"
           placeholder="Search users…"
           autocomplete="off"
         />
-        <ul id="slack-user-list" class="dropdown hidden"></ul>
+        <ul id="slack-list" class="dropdown hidden"></ul>
       </div>
 
-      <!-- Selected user chip -->
-      <div id="selected-user" class="chip hidden">
-        <img id="selected-avatar" class="chip__avatar" src="" alt="" />
+      <!-- Selected target chip -->
+      <div id="selected-target" class="chip hidden">
+        <div id="selected-avatar-container" class="chip__avatar-container">
+          <img id="selected-avatar" class="chip__avatar" src="" alt="" />
+        </div>
         <span id="selected-name" class="chip__name"></span>
-        <button id="clear-user" class="chip__clear" title="Clear selection">&times;</button>
+        <button id="clear-target" class="chip__clear" title="Clear selection">&times;</button>
       </div>
 
       <!-- Optional personal note -->
@@ -98,7 +132,7 @@
 
   </div>
 
-  <!-- Missive JS SDK (communicates with parent Missive window) -->
+  <!-- Missive JS SDK -->
   <script src="https://integrations.missiveapp.com/missive.js"></script>
   <script src="/assets/app.js"></script>
 </body>
