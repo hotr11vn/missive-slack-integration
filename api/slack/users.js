@@ -2,11 +2,10 @@
  * GET /api/slack/users
  *
  * Returns a filtered list of real (non-bot, non-deleted) Slack workspace
- * members.  The Missive sidebar calls this endpoint to populate the
- * "Select a user" picker.
+ * members AND channels for the Missive sidebar picker.
  *
  * Required env var:  SLACK_BOT_TOKEN
- * Slack scope:       users:read
+ * Slack scopes:      users:read, channels:read, groups:read
  */
 
 const { WebClient } = require("@slack/web-api");
@@ -34,28 +33,19 @@ module.exports = async function handler(req, res) {
   try {
     const slack = new WebClient(token);
 
-    // Paginate through all workspace members
+    // 1. Fetch human members
     const members = [];
-    let cursor;
-
+    let userCursor;
     do {
       const page = await slack.users.list({
         limit: 200,
-        ...(cursor ? { cursor } : {}),
+        ...(userCursor ? { cursor: userCursor } : {}),
       });
 
-      if (!page.ok) {
-        throw new Error(page.error || "Slack API error");
-      }
+      if (!page.ok) throw new Error(page.error || "Slack API error (users)");
 
-      // Keep only real, active human users
       const humans = (page.members || []).filter(
-        (u) =>
-          !u.deleted &&
-          !u.is_bot &&
-          u.id !== "USLACKBOT" &&
-          !u.is_restricted &&
-          !u.is_ultra_restricted
+        (u) => !u.deleted && !u.is_bot && u.id !== "USLACKBOT"
       );
 
       members.push(
@@ -67,21 +57,39 @@ module.exports = async function handler(req, res) {
           email: u.profile?.email || "",
         }))
       );
+      userCursor = page.response_metadata?.next_cursor;
+    } while (userCursor);
 
-      cursor = page.response_metadata?.next_cursor;
-    } while (cursor);
+    members.sort((a, b) => a.displayName.localeCompare(b.displayName));
 
-    // Sort alphabetically by display name
-    members.sort((a, b) =>
-      a.displayName.localeCompare(b.displayName, undefined, {
-        sensitivity: "base",
-      })
-    );
+    // 2. Fetch channels (public and private)
+    const channels = [];
+    let channelCursor;
+    do {
+      const page = await slack.conversations.list({
+        limit: 200,
+        types: "public_channel,private_channel",
+        ...(channelCursor ? { cursor: channelCursor } : {}),
+      });
+
+      if (!page.ok) throw new Error(page.error || "Slack API error (channels)");
+
+      channels.push(
+        ...(page.channels || []).map((c) => ({
+          id: c.id,
+          name: c.name,
+          isPrivate: c.is_private,
+        }))
+      );
+      channelCursor = page.response_metadata?.next_cursor;
+    } while (channelCursor);
+
+    channels.sort((a, b) => a.name.localeCompare(b.name));
 
     res.setHeader("Access-Control-Allow-Origin", "*");
-    return res.status(200).json({ ok: true, members });
+    return res.status(200).json({ ok: true, members, channels });
   } catch (err) {
-    console.error("Error fetching Slack users:", err);
+    console.error("Error fetching Slack data:", err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 };
