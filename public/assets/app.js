@@ -1,12 +1,6 @@
 /**
  * ═══════════════════════════════════════════════════════════════════
  * Missive → Slack  |  Sidebar Application
- *
- * This script runs inside the Missive sidebar iFrame.  It:
- *   1. Registers a "Share to Slack" action in Missive's context menu
- *   2. Listens for conversation changes to update the email preview
- *   3. Fetches Slack workspace users for the recipient picker
- *   4. Sends the email content to a chosen Slack user via our API
  * ═══════════════════════════════════════════════════════════════════
  */
 
@@ -14,7 +8,6 @@
   "use strict";
 
   // ── Configuration ──────────────────────────────────────────────────
-  // The API base is the same origin as this page (Vercel serves both).
   const API_BASE = "";
 
   // ── DOM references ─────────────────────────────────────────────────
@@ -30,12 +23,15 @@
   const $emailDate    = document.getElementById("email-date");
   const $emailBody    = document.getElementById("email-body");
 
-  const $userSearch   = document.getElementById("slack-user-search");
-  const $userList     = document.getElementById("slack-user-list");
-  const $selectedUser = document.getElementById("selected-user");
+  const $tabUsers     = document.getElementById("tab-users");
+  const $tabChannels  = document.getElementById("tab-channels");
+  const $search       = document.getElementById("slack-search");
+  const $list         = document.getElementById("slack-list");
+  
+  const $selectedTarget = document.getElementById("selected-target");
   const $selectedAvatar = document.getElementById("selected-avatar");
-  const $selectedName = document.getElementById("selected-name");
-  const $clearUser    = document.getElementById("clear-user");
+  const $selectedName   = document.getElementById("selected-name");
+  const $clearTarget    = document.getElementById("clear-target");
 
   const $personalNote = document.getElementById("personal-note");
   const $btnSend      = document.getElementById("btn-send");
@@ -44,11 +40,13 @@
   const $status       = document.getElementById("status");
 
   // ── State ──────────────────────────────────────────────────────────
-  let slackUsers = [];            // cached user list from Slack
-  let selectedSlackUser = null;   // currently picked Slack user
-  let currentEmail = null;        // email data from Missive
+  let slackUsers = [];
+  let slackChannels = [];
+  let activeTab = "users"; // "users" or "channels"
+  let selectedTarget = null;
+  let currentEmail = null;
   let currentConversationId = null;
-  let usersLoaded = false;
+  let dataLoaded = false;
 
   // ── UI helpers ─────────────────────────────────────────────────────
 
@@ -84,14 +82,11 @@
   }
 
   function setLoading(on) {
-    $btnSend.disabled = on || !selectedSlackUser;
+    $btnSend.disabled = on || !selectedTarget;
     $btnLabel.textContent = on ? "Sending…" : "Send to Slack";
     $btnSpinner.classList.toggle("hidden", !on);
   }
 
-  /**
-   * Strip HTML tags for the preview card body.
-   */
   function stripHtml(html) {
     if (!html) return "";
     var tmp = document.createElement("div");
@@ -99,10 +94,6 @@
     return tmp.textContent || tmp.innerText || "";
   }
 
-  /**
-   * Format a contact field (AddressField) into a readable string.
-   * Missive returns: { name: "...", address: "..." }
-   */
   function formatContact(field) {
     if (!field) return "";
     if (typeof field === "string") return field;
@@ -113,84 +104,96 @@
     return field.address || field.name || "";
   }
 
-  // ── Slack user picker ──────────────────────────────────────────────
+  // ── Slack target picker ────────────────────────────────────────────
 
-  function renderUserList(filter) {
+  function renderList(filter) {
     var q = (filter || "").toLowerCase();
+    var items = activeTab === "users" ? slackUsers : slackChannels;
+    
     var filtered = q
-      ? slackUsers.filter(function (u) {
-          return (
-            u.displayName.toLowerCase().includes(q) ||
-            u.name.toLowerCase().includes(q) ||
-            (u.email && u.email.toLowerCase().includes(q))
-          );
+      ? items.filter(function (item) {
+          var name = (item.displayName || item.name || "").toLowerCase();
+          return name.includes(q) || (item.email && item.email.toLowerCase().includes(q));
         })
-      : slackUsers;
+      : items;
 
-    $userList.innerHTML = "";
+    $list.innerHTML = "";
 
     if (!filtered.length) {
       var li = document.createElement("li");
       li.className = "dropdown__empty";
-      li.textContent = q ? "No users found" : "Loading users…";
-      $userList.appendChild(li);
-      $userList.classList.remove("hidden");
+      li.textContent = q ? "No matches found" : "Loading " + activeTab + "…";
+      $list.appendChild(li);
+      $list.classList.remove("hidden");
       return;
     }
 
-    filtered.slice(0, 50).forEach(function (user) {
+    filtered.slice(0, 50).forEach(function (item) {
       var li = document.createElement("li");
-      li.dataset.id = user.id;
-
-      var img = document.createElement("img");
-      img.src = user.avatar || "";
-      img.alt = "";
-      img.width = 24;
-      img.height = 24;
+      
+      if (activeTab === "users") {
+        var img = document.createElement("img");
+        img.src = item.avatar || "";
+        img.alt = "";
+        img.width = 24;
+        img.height = 24;
+        li.appendChild(img);
+      } else {
+        var icon = document.createElement("span");
+        icon.textContent = "#";
+        icon.style.marginRight = "8px";
+        icon.style.fontWeight = "bold";
+        li.appendChild(icon);
+      }
 
       var span = document.createElement("span");
-      span.textContent = user.displayName;
-
-      li.appendChild(img);
+      span.textContent = item.displayName || item.name;
       li.appendChild(span);
 
-      li.addEventListener("click", function () { selectUser(user); });
-      $userList.appendChild(li);
+      li.addEventListener("click", function () { selectTarget(item); });
+      $list.appendChild(li);
     });
 
-    $userList.classList.remove("hidden");
+    $list.classList.remove("hidden");
   }
 
-  function selectUser(user) {
-    selectedSlackUser = user;
-    $selectedAvatar.src = user.avatar || "";
-    $selectedName.textContent = user.displayName;
-    $selectedUser.classList.remove("hidden");
-    $userSearch.value = "";
-    $userList.classList.add("hidden");
+  function selectTarget(target) {
+    selectedTarget = target;
+    if (activeTab === "users") {
+      $selectedAvatar.src = target.avatar || "";
+      $selectedAvatar.classList.remove("hidden");
+    } else {
+      $selectedAvatar.classList.add("hidden");
+    }
+    $selectedName.textContent = target.displayName || target.name;
+    $selectedTarget.classList.remove("hidden");
+    $search.value = "";
+    $list.classList.add("hidden");
     $btnSend.disabled = false;
     hideStatus();
   }
 
-  function clearUser() {
-    selectedSlackUser = null;
-    $selectedUser.classList.add("hidden");
+  function clearTarget() {
+    selectedTarget = null;
+    $selectedTarget.classList.add("hidden");
     $btnSend.disabled = true;
-    $userSearch.value = "";
+    $search.value = "";
   }
 
-  // ── Fetch Slack users from our API ─────────────────────────────────
+  // ── Fetch Slack data from our API ──────────────────────────────────
 
-  async function loadSlackUsers() {
-    if (usersLoaded) return;
+  async function loadSlackData() {
+    if (dataLoaded) return;
     try {
       var res = await fetch(API_BASE + "/api/slack/users");
       var data = await res.json();
-      if (!data.ok) throw new Error(data.error || "Failed to load users");
+      if (!data.ok) throw new Error(data.error || "Failed to load Slack data");
+      
       slackUsers = data.members || [];
-      usersLoaded = true;
+      slackChannels = data.channels || [];
+      dataLoaded = true;
     } catch (err) {
-      console.error("[Share to Slack] Failed to load Slack users:", err);
+      console.error("[Share to Slack] Failed to load Slack data:", err);
     }
   }
 
@@ -198,14 +201,12 @@
 
   function displayEmail(email) {
     currentEmail = email;
-
     $emailSubject.textContent = email.subject || "No Subject";
     $emailFrom.textContent = formatContact(email.from_field);
     $emailTo.textContent = formatContact(email.to_fields);
 
     if (email.delivered_at) {
       var ts = email.delivered_at;
-      // Missive delivers Unix timestamps in seconds
       var d = new Date(typeof ts === "number" ? ts * 1000 : ts);
       $emailDate.textContent = d.toLocaleString();
     } else {
@@ -215,26 +216,15 @@
     var bodyText = stripHtml(email.body || email.preview || "");
     $emailBody.textContent = bodyText.slice(0, 500);
 
-    // Reset send state
-    clearUser();
+    clearTarget();
     hideStatus();
     $personalNote.value = "";
-
     showState("ready");
   }
 
   // ── Missive integration ────────────────────────────────────────────
 
-  /**
-   * Fetch the conversation data for the given IDs and display the
-   * latest email message.
-   *
-   * IMPORTANT: Missive SDK methods return Promises (not callbacks).
-   * Reference: https://missiveapp.com/docs/developers/ui-iframe-integrations/javascript-api
-   */
   async function handleConversationChange(ids) {
-    console.log("[Share to Slack] change:conversations fired, ids:", ids);
-
     if (!ids || !ids.length) {
       showState("empty");
       currentConversationId = null;
@@ -248,18 +238,13 @@
     showState("loading");
 
     try {
-      // fetchConversations returns a Promise that resolves with an array
       var conversations = await Missive.fetchConversations(ids);
-      console.log("[Share to Slack] fetchConversations result:", conversations);
-
       if (!conversations || !conversations.length) {
         showState("empty");
         return;
       }
 
       var conv = conversations[0];
-
-      // The conversation object has a `latest_message` with full email data
       var message = conv.latest_message;
 
       if (message && message.from_field) {
@@ -267,16 +252,12 @@
           subject: message.subject || conv.subject || "No Subject",
           from_field: message.from_field,
           to_fields: message.to_fields || [],
-          cc_fields: message.cc_fields || [],
           body: message.body || "",
           preview: message.preview || "",
           delivered_at: message.delivered_at,
-          _conversationId: conversationId,
           _webUrl: conv.link || "",
-          _messageId: message.id,
         });
       } else {
-        // Conversation might be a chat (no email message) — show what we have
         displayEmail({
           subject: conv.subject || "No Subject",
           from_field: conv.authors && conv.authors[0] ? conv.authors[0] : null,
@@ -284,22 +265,15 @@
           body: "",
           preview: message ? message.preview || "" : "",
           delivered_at: message ? message.delivered_at : null,
-          _conversationId: conversationId,
           _webUrl: conv.link || "",
         });
       }
     } catch (err) {
       console.error("[Share to Slack] Error fetching conversation:", err);
-      showError("Could not load email data. " + (err.message || String(err)));
+      showError("Could not load email data.");
     }
   }
 
-  /**
-   * Register the "Share to Slack" action in Missive's context menu.
-   *
-   * When triggered from the message context menu, the callback receives
-   * an object like: { message: { id, subject, ... }, conversation: { id, ... } }
-   */
   function registerMissiveActions() {
     try {
       Missive.setActions([
@@ -307,45 +281,27 @@
           label: "Share to Slack",
           contexts: ["message"],
           callback: function (action) {
-            console.log("[Share to Slack] Action triggered:", action);
-
-            // When triggered from message context, fetch that specific message
             if (action && action.message && action.message.id) {
               Missive.fetchMessages([action.message.id])
                 .then(function (msgs) {
-                  console.log("[Share to Slack] fetchMessages result:", msgs);
                   if (msgs && msgs.length) {
-                    var convLink = "";
-                    if (action.conversation && action.conversation.id) {
-                      // We'll try to get the link from the conversation
-                      convLink = action.conversation.link || "";
-                    }
+                    var convLink = action.conversation ? action.conversation.link || "" : "";
                     displayEmail({
                       subject: msgs[0].subject || "No Subject",
                       from_field: msgs[0].from_field,
                       to_fields: msgs[0].to_fields || [],
-                      cc_fields: msgs[0].cc_fields || [],
                       body: msgs[0].body || "",
                       preview: msgs[0].preview || "",
                       delivered_at: msgs[0].delivered_at,
-                      _conversationId: action.conversation
-                        ? action.conversation.id
-                        : "",
                       _webUrl: convLink,
-                      _messageId: msgs[0].id,
                     });
-                    // Open the sidebar to show the loaded email
                     Missive.openSelf();
                   }
-                })
-                .catch(function (err) {
-                  console.error("[Share to Slack] fetchMessages error:", err);
                 });
             }
           },
         },
       ]);
-      console.log("[Share to Slack] Actions registered successfully");
     } catch (e) {
       console.warn("[Share to Slack] Could not register Missive actions:", e);
     }
@@ -354,12 +310,11 @@
   // ── Send to Slack ──────────────────────────────────────────────────
 
   async function sendToSlack() {
-    if (!selectedSlackUser || !currentEmail) return;
+    if (!selectedTarget || !currentEmail) return;
 
     setLoading(true);
     hideStatus();
 
-    // Build the body text, prepending the personal note if provided
     var bodyContent = currentEmail.body || currentEmail.preview || "";
     var note = $personalNote.value.trim();
     if (note) {
@@ -367,7 +322,7 @@
     }
 
     var payload = {
-      userId: selectedSlackUser.id,
+      channelId: selectedTarget.id,
       subject: currentEmail.subject || "No Subject",
       from: formatContact(currentEmail.from_field),
       to: formatContact(currentEmail.to_fields),
@@ -378,6 +333,8 @@
           : currentEmail.delivered_at
         : null,
       missiveLink: currentEmail._webUrl || null,
+      // We will tell the API whether this is a DM or a channel
+      isUser: activeTab === "users"
     };
 
     try {
@@ -388,23 +345,16 @@
       });
 
       var data = await res.json();
-
       if (!data.ok) throw new Error(data.error || "Send failed");
 
-      showStatus(
-        "Sent to " + selectedSlackUser.displayName + " on Slack!",
-        "success"
-      );
-
-      // Notify Missive that the action completed (optional toast)
+      showStatus("Sent successfully to " + (selectedTarget.displayName || selectedTarget.name) + "!", "success");
+      
       try {
         Missive.alert({
           title: "Shared to Slack",
-          message: "Email sent to " + selectedSlackUser.displayName,
+          message: "Email sent to " + (selectedTarget.displayName || selectedTarget.name),
         });
-      } catch (_) {
-        // alert is non-critical
-      }
+      } catch (_) {}
     } catch (err) {
       console.error("[Share to Slack] Send error:", err);
       showStatus("Failed to send: " + err.message, "error");
@@ -415,67 +365,60 @@
 
   // ── Event listeners ────────────────────────────────────────────────
 
-  // User search / picker
-  $userSearch.addEventListener("focus", function () {
-    loadSlackUsers().then(function () {
-      renderUserList($userSearch.value);
+  $tabUsers.addEventListener("click", function() {
+    activeTab = "users";
+    $tabUsers.classList.add("active");
+    $tabChannels.classList.remove("active");
+    $search.placeholder = "Search users…";
+    clearTarget();
+    renderList($search.value);
+  });
+
+  $tabChannels.addEventListener("click", function() {
+    activeTab = "channels";
+    $tabChannels.classList.add("active");
+    $tabUsers.classList.remove("active");
+    $search.placeholder = "Search channels…";
+    clearTarget();
+    renderList($search.value);
+  });
+
+  $search.addEventListener("focus", function () {
+    loadSlackData().then(function () {
+      renderList($search.value);
     });
   });
 
-  $userSearch.addEventListener("input", function () {
-    renderUserList($userSearch.value);
+  $search.addEventListener("input", function () {
+    renderList($search.value);
   });
 
-  // Close dropdown when clicking outside
   document.addEventListener("click", function (e) {
-    if (!e.target.closest(".select-wrapper")) {
-      $userList.classList.add("hidden");
+    if (!e.target.closest(".select-wrapper") && !e.target.closest(".filter-tabs")) {
+      $list.classList.add("hidden");
     }
   });
 
-  // Clear selected user
-  $clearUser.addEventListener("click", clearUser);
-
-  // Send button
+  $clearTarget.addEventListener("click", clearTarget);
   $btnSend.addEventListener("click", sendToSlack);
 
   // ── Initialise ─────────────────────────────────────────────────────
 
   function init() {
-    console.log("[Share to Slack] Initialising...");
-    console.log("[Share to Slack] Missive SDK available:", typeof Missive !== "undefined");
-
     showState("empty");
-
-    // Pre-fetch Slack users in the background
-    loadSlackUsers();
+    loadSlackData();
 
     if (typeof Missive !== "undefined") {
-      // Register context-menu action
+      Missive.on("change:conversations", handleConversationChange);
       registerMissiveActions();
-
-      // Listen for conversation selection changes.
-      // The { retroactive: true } option ensures the callback fires
-      // immediately if a conversation is already selected when the
-      // sidebar loads (which is the common case).
-      Missive.on(
-        "change:conversations",
-        function (ids) {
-          console.log("[Share to Slack] change:conversations event, ids:", ids);
-          handleConversationChange(ids);
-        },
-        { retroactive: true }
-      );
-
-      console.log("[Share to Slack] Event listeners registered");
-    } else {
-      console.warn(
-        "[Share to Slack] Missive SDK not detected — running in standalone/dev mode."
-      );
+      
+      // Check for initial conversation
+      Missive.fetchConversations().then(function (ids) {
+        if (ids && ids.length) handleConversationChange(ids);
+      });
     }
   }
 
-  // Run when DOM is ready
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
   } else {
