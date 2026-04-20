@@ -1,22 +1,11 @@
 /**
  * POST /api/slack/send
  *
- * Opens a DM with the chosen Slack user and posts a rich Block Kit message
- * containing the email details forwarded from Missive.
+ * Opens a DM with the chosen Slack user or posts to a channel
+ * using the SLACK_USER_TOKEN to send "as the user" (e.g. @davidhoang).
  *
- * Required env var:  SLACK_BOT_TOKEN
- * Slack scopes:      im:write, chat:write
- *
- * Expected JSON body:
- * {
- *   "userId":        "U12345678",            // Slack user ID
- *   "subject":       "Re: Q3 Report",        // Email subject
- *   "from":          "Alice <a@b.com>",      // Sender
- *   "to":            "Bob <b@b.com>",        // Recipient(s)
- *   "body":          "<p>Hi team...</p>",    // HTML or plain-text body
- *   "date":          "2025-06-15T10:30:00Z", // ISO timestamp (optional)
- *   "missiveLink":   "https://mail.missiveapp.com/..." // deep link (optional)
- * }
+ * Required env var:  SLACK_USER_TOKEN
+ * Slack scopes:      im:write, chat:write, channels:read, groups:read
  */
 
 const { WebClient } = require("@slack/web-api");
@@ -25,11 +14,6 @@ const { WebClient } = require("@slack/web-api");
 
 /**
  * Robustly strip HTML from an email body.
- *
- * Emails often contain large <style> and <script> blocks whose *content*
- * (CSS rules, JS) must be removed entirely — not just the tags themselves.
- * A simple tag-stripping regex leaves all that text behind, which is what
- * caused the raw CSS to appear in the Slack message.
  */
 function stripHtml(html) {
   if (!html) return "";
@@ -37,7 +21,6 @@ function stripHtml(html) {
   let text = html;
 
   // 1. Remove entire <style>…</style> and <script>…</script> blocks
-  //    including all the CSS/JS content between them.
   text = text.replace(/<style[\s\S]*?<\/style>/gi, "");
   text = text.replace(/<script[\s\S]*?<\/script>/gi, "");
 
@@ -76,85 +59,17 @@ function stripHtml(html) {
 }
 
 /**
- * Truncate text to fit Slack's 3 000-char section limit.
+ * Truncate text to fit Slack's 3,000-char section limit.
  */
-function truncate(text, max = 2900) {
-  if (!text) return "_No body content._";
-  if (text.length <= max) return text;
-  return text.slice(0, max) + "\n\n…_(truncated)_";
+function truncate(str, maxLen) {
+  if (!str || str.length <= maxLen) return str;
+  return str.slice(0, maxLen - 3) + "...";
 }
 
-/**
- * Build the Block Kit blocks array for the Slack message.
- */
-function buildBlocks({ subject, from, to, body, date, missiveLink }) {
-  const blocks = [];
-
-  // ── Header: email subject ──────────────────────────────────────────
-  blocks.push({
-    type: "header",
-    text: {
-      type: "plain_text",
-      text: (subject || "No Subject").slice(0, 150),
-      emoji: true,
-    },
-  });
-
-  // ── Context: metadata (from, to, date) ─────────────────────────────
-  const metaParts = [];
-  if (from) metaParts.push(`*From:* ${from}`);
-  if (to)   metaParts.push(`*To:* ${to}`);
-  if (date) {
-    const d = new Date(date);
-    if (!isNaN(d.getTime())) {
-      metaParts.push(
-        `*Date:* ${d.toLocaleString("en-US", {
-          dateStyle: "medium",
-          timeStyle: "short",
-        })}`
-      );
-    }
-  }
-
-  if (metaParts.length) {
-    blocks.push({
-      type: "context",
-      elements: [{ type: "mrkdwn", text: metaParts.join("  |  ") }],
-    });
-  }
-
-  // ── Divider ────────────────────────────────────────────────────────
-  blocks.push({ type: "divider" });
-
-  // ── Body (plain text, fully stripped) ─────────────────────────────
-  const cleanBody = truncate(stripHtml(body));
-  blocks.push({
-    type: "section",
-    text: { type: "mrkdwn", text: cleanBody },
-  });
-
-  // ── Action button: open in Missive ─────────────────────────────────
-  if (missiveLink) {
-    blocks.push({
-      type: "actions",
-      elements: [
-        {
-          type: "button",
-          text: { type: "plain_text", text: "View in Missive", emoji: true },
-          url: missiveLink,
-          style: "primary",
-        },
-      ],
-    });
-  }
-
-  return blocks;
-}
-
-// ── Handler ──────────────────────────────────────────────────────────
+// ── Main handler ─────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
-  // CORS pre-flight
+  // ── CORS pre-flight ───────────────────────────────────────────────
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
@@ -166,54 +81,107 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
-  const token = process.env.SLACK_BOT_TOKEN;
-  if (!token) {
-    console.error("SLACK_BOT_TOKEN is not set");
-    return res.status(500).json({ ok: false, error: "Server misconfiguration" });
+  // ── Validate input ────────────────────────────────────────────────
+  const { channelId, subject, from, to, body, date, missiveLink, isUser } = req.body;
+
+  if (!channelId) {
+    return res.status(400).json({ ok: false, error: "channelId is required" });
   }
 
-  const { userId, subject, from, to, body, date, missiveLink, senderName } =
-    req.body || {};
-
-  if (!userId) {
-    return res.status(400).json({ ok: false, error: "Missing required field: userId" });
+  // ── Validate token ────────────────────────────────────────────────
+  // Prefer SLACK_USER_TOKEN for sending "as user". Fallback to SLACK_BOT_TOKEN.
+  const token = process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN;
+  if (!token) {
+    console.error("No Slack token configured (SLACK_USER_TOKEN or SLACK_BOT_TOKEN)");
+    return res.status(500).json({ ok: false, error: "Server misconfiguration" });
   }
 
   try {
     const slack = new WebClient(token);
 
-    // 1. Open (or retrieve) the DM channel with the target user
-    const dmRes = await slack.conversations.open({ users: userId });
-    if (!dmRes.ok) throw new Error(dmRes.error || "Failed to open DM channel");
-    const channelId = dmRes.channel.id;
+    // ── Target identification ─────────────────────────────────────────
+    let targetChannelId = channelId;
 
-    // 2. Build the Block Kit message
-    const blocks = buildBlocks({ subject, from, to, body, date, missiveLink });
+    // If target is a user ID (starts with U or W), we must open a DM first
+    if (isUser && (channelId.startsWith("U") || channelId.startsWith("W"))) {
+      const openDm = await slack.conversations.open({ users: channelId });
+      if (!openDm.ok) {
+        throw new Error(openDm.error || "Could not open DM channel");
+      }
+      targetChannelId = openDm.channel.id;
+    }
 
-    // 3. Post the message.
-    //    We use `username` + `icon_emoji` as a cosmetic override so the
-    //    message appears to come from "davidhoang via Missive" rather than
-    //    the generic bot name.  Requires the `chat:write.customize` scope.
-    //    Note: Slack does NOT allow truly sending "as" another user with a
-    //    bot token — that requires a full user OAuth token (chat:write:user).
-    const displayName = senderName || process.env.SENDER_DISPLAY_NAME || "davidhoang via Missive";
+    // ── Message construction ──────────────────────────────────────────
+    const cleanBody = stripHtml(body);
+    const formattedDate = date ? new Date(date).toLocaleString() : "Unknown date";
 
-    const msgRes = await slack.chat.postMessage({
-      channel: channelId,
-      text: `Email shared from Missive: ${subject || "No Subject"}`, // fallback for notifications
-      blocks,
-      username: displayName,
-      icon_emoji: ":email:",
-      unfurl_links: false,
-      unfurl_media: false,
+    const blocks = [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: truncate(subject || "No Subject", 3000),
+          emoji: true,
+        },
+      },
+      {
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: `*From:* ${from || "Unknown"} | *To:* ${to || "Unknown"} | *Date:* ${formattedDate}`,
+          },
+        ],
+      },
+      { type: "divider" },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: truncate(cleanBody || "_No message content_", 3000),
+        },
+      },
+    ];
+
+    // Add deep link button if available
+    if (missiveLink) {
+      blocks.push({
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: "View in Missive",
+              emoji: true,
+            },
+            url: missiveLink,
+            action_id: "view_in_missive",
+          },
+        ],
+      });
+    }
+
+    // ── Send to Slack ─────────────────────────────────────────────────
+    const result = await slack.chat.postMessage({
+      channel: targetChannelId,
+      text: `[Missive Email] ${subject}`, // Fallback text
+      blocks: blocks,
     });
 
-    if (!msgRes.ok) throw new Error(msgRes.error || "Failed to send message");
+    if (!result.ok) {
+      throw new Error(result.error || "Slack chat.postMessage failed");
+    }
 
     res.setHeader("Access-Control-Allow-Origin", "*");
-    return res.status(200).json({ ok: true, channel: channelId, ts: msgRes.ts });
+    return res.status(200).json({
+      ok: true,
+      channel: result.channel,
+      ts: result.ts,
+    });
+
   } catch (err) {
-    console.error("Error sending Slack message:", err);
+    console.error("Error sending to Slack:", err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 };
