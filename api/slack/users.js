@@ -67,13 +67,23 @@ module.exports = async function handler(req, res) {
 
     members.sort((a, b) => a.displayName.localeCompare(b.displayName));
 
-    // 2. Fetch channels (public and private)
+    // 2. Fetch channels (try public+private, fall back to public only)
     const channels = [];
+    let channelTypes = "public_channel,private_channel";
+    try {
+      // Test if token has groups:read scope by fetching one private channel
+      await slack.conversations.list({ limit: 1, types: "private_channel" });
+    } catch (scopeErr) {
+      // Token lacks groups:read — fall back to public channels only
+      console.warn("groups:read scope not available, fetching public channels only");
+      channelTypes = "public_channel";
+    }
+
     let channelCursor;
     do {
       const page = await slack.conversations.list({
         limit: 200,
-        types: "public_channel,private_channel",
+        types: channelTypes,
         ...(channelCursor ? { cursor: channelCursor } : {}),
       });
 
@@ -83,7 +93,7 @@ module.exports = async function handler(req, res) {
         ...(page.channels || []).map((c) => ({
           id: c.id,
           name: c.name,
-          isPrivate: c.is_private,
+          isPrivate: c.is_private || false,
         }))
       );
       channelCursor = page.response_metadata?.next_cursor;
