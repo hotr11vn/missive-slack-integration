@@ -161,11 +161,15 @@
     selectedTarget = target;
     if (activeTab === "users") {
       $selectedAvatar.src = target.avatar || "";
-      $selectedAvatar.classList.remove("hidden");
+      $selectedAvatar.style.display = "";
+      $selectedAvatar.alt = "";
     } else {
-      $selectedAvatar.classList.add("hidden");
+      // Show a # icon placeholder for channels instead of an avatar
+      $selectedAvatar.src = "";
+      $selectedAvatar.style.display = "none";
+      // Show # prefix in the name
     }
-    $selectedName.textContent = target.displayName || target.name;
+    $selectedName.textContent = (activeTab === "channels" ? "# " : "") + (target.displayName || target.name);
     $selectedTarget.classList.remove("hidden");
     $search.value = "";
     $list.classList.add("hidden");
@@ -409,13 +413,17 @@
     loadSlackData();
 
     if (typeof Missive !== "undefined") {
-      Missive.on("change:conversations", handleConversationChange);
       registerMissiveActions();
-      
-      // Check for initial conversation
-      Missive.fetchConversations().then(function (ids) {
-        if (ids && ids.length) handleConversationChange(ids);
-      });
+
+      // { retroactive: true } fires the callback immediately with the
+      // currently selected conversation when the sidebar first opens.
+      // Without this, the sidebar stays blank if a conversation is
+      // already selected when the app loads.
+      Missive.on(
+        "change:conversations",
+        handleConversationChange,
+        { retroactive: true }
+      );
     }
   }
 
