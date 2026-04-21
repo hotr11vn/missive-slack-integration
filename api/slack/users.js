@@ -4,8 +4,12 @@
  * Returns a filtered list of real (non-bot, non-deleted) Slack workspace
  * members AND channels for the Missive sidebar picker.
  *
- * Required env var:  SLACK_BOT_TOKEN
- * Slack scopes:      users:read, channels:read, groups:read
+ * Required env vars:  SLACK_BOT_TOKEN, SLACK_USER_TOKEN
+ * Bot token scopes:   users:read
+ * User token scopes:  channels:read, groups:read
+ *
+ * Using the user token for channels means ALL private channels the user
+ * is a member of will appear — not just ones the bot was added to.
  */
 
 const { WebClient } = require("@slack/web-api");
@@ -23,12 +27,12 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
-  // ── Validate token ────────────────────────────────────────────────
-  // Always use SLACK_BOT_TOKEN for fetching users and channels.
-  // The bot token has users:read and channels:read scopes configured
-  // on the Slack app. SLACK_USER_TOKEN is only used in send.js to
-  // post messages as the user — it does NOT have users:read scope.
+  // ── Validate tokens ───────────────────────────────────────────────
+  // Bot token: used for users.list (needs users:read)
+  // User token: used for conversations.list (sees all channels the user is in,
+  //             including private — bot token only sees channels it was added to)
   const botToken = process.env.SLACK_BOT_TOKEN;
+  const userToken = process.env.SLACK_USER_TOKEN;
 
   if (!botToken) {
     console.error("No SLACK_BOT_TOKEN configured");
@@ -36,13 +40,15 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const slack = new WebClient(botToken);
+    const slackBot = new WebClient(botToken);
+    // Use user token for channels if available, otherwise fall back to bot token
+    const slackChannels = userToken ? new WebClient(userToken) : slackBot;
 
-    // 1. Fetch human members
+    // 1. Fetch human members (bot token)
     const members = [];
     let userCursor;
     do {
-      const page = await slack.users.list({
+      const page = await slackBot.users.list({
         limit: 200,
         ...(userCursor ? { cursor: userCursor } : {}),
       });
@@ -67,21 +73,20 @@ module.exports = async function handler(req, res) {
 
     members.sort((a, b) => a.displayName.localeCompare(b.displayName));
 
-    // 2. Fetch channels (try public+private, fall back to public only)
+    // 2. Fetch channels (user token — sees all channels user is member of)
+    // Try public + private first, fall back to public only if groups:read missing
     const channels = [];
     let channelTypes = "public_channel,private_channel";
     try {
-      // Test if token has groups:read scope by fetching one private channel
-      await slack.conversations.list({ limit: 1, types: "private_channel" });
+      await slackChannels.conversations.list({ limit: 1, types: "private_channel" });
     } catch (scopeErr) {
-      // Token lacks groups:read — fall back to public channels only
-      console.warn("groups:read scope not available, fetching public channels only");
+      console.warn("groups:read scope not available on channel token, fetching public channels only");
       channelTypes = "public_channel";
     }
 
     let channelCursor;
     do {
-      const page = await slack.conversations.list({
+      const page = await slackChannels.conversations.list({
         limit: 200,
         types: channelTypes,
         ...(channelCursor ? { cursor: channelCursor } : {}),
@@ -90,7 +95,7 @@ module.exports = async function handler(req, res) {
       if (!page.ok) throw new Error(page.error || "Slack API error (channels)");
 
       channels.push(
-        ...(page.channels || []).map((c) => ({
+        ...(page.channels || []).filter(c => !c.is_archived).map((c) => ({
           id: c.id,
           name: c.name,
           isPrivate: c.is_private || false,
