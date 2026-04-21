@@ -24,9 +24,14 @@ module.exports = async function handler(req, res) {
   }
 
   // ── Validate token ────────────────────────────────────────────────
-  const token = process.env.SLACK_BOT_TOKEN;
+  // Use SLACK_USER_TOKEN to fetch channels (allows private channels)
+  // Fallback to SLACK_BOT_TOKEN for members list if needed
+  const userToken = process.env.SLACK_USER_TOKEN;
+  const botToken = process.env.SLACK_BOT_TOKEN;
+  const token = userToken || botToken;
+
   if (!token) {
-    console.error("SLACK_BOT_TOKEN is not set");
+    console.error("No Slack token configured (SLACK_USER_TOKEN or SLACK_BOT_TOKEN)");
     return res.status(500).json({ ok: false, error: "Server misconfiguration" });
   }
 
