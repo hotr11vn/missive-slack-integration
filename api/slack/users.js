@@ -24,19 +24,19 @@ module.exports = async function handler(req, res) {
   }
 
   // ── Validate token ────────────────────────────────────────────────
-  // Use SLACK_USER_TOKEN to fetch channels (allows private channels)
-  // Fallback to SLACK_BOT_TOKEN for members list if needed
-  const userToken = process.env.SLACK_USER_TOKEN;
+  // Always use SLACK_BOT_TOKEN for fetching users and channels.
+  // The bot token has users:read and channels:read scopes configured
+  // on the Slack app. SLACK_USER_TOKEN is only used in send.js to
+  // post messages as the user — it does NOT have users:read scope.
   const botToken = process.env.SLACK_BOT_TOKEN;
-  const token = userToken || botToken;
 
-  if (!token) {
-    console.error("No Slack token configured (SLACK_USER_TOKEN or SLACK_BOT_TOKEN)");
-    return res.status(500).json({ ok: false, error: "Server misconfiguration" });
+  if (!botToken) {
+    console.error("No SLACK_BOT_TOKEN configured");
+    return res.status(500).json({ ok: false, error: "Server misconfiguration: SLACK_BOT_TOKEN missing" });
   }
 
   try {
-    const slack = new WebClient(token);
+    const slack = new WebClient(botToken);
 
     // 1. Fetch human members
     const members = [];
